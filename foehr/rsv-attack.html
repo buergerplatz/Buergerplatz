@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<title>VIRAL LOAD — RSV Field Scanner</title>
+<style>
+  :root{
+    --void:#070b09;
+    --toxic:#54ff9f;
+    --toxic-dim:#1f6b46;
+    --amber:#ffb627;
+    --infect:#ff2e4d;
+    --bone:#d8e8df;
+    --grid:rgba(84,255,159,.10);
+    --mono:'SF Mono',ui-monospace,'Cascadia Mono','Consolas',monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;overflow:hidden;background:var(--void);color:var(--bone);
+    font-family:var(--mono);overscroll-behavior:none;}
+  #stage{position:fixed;inset:0;overflow:hidden;}
+
+  /* ---- camera feed ---- */
+  #cam{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+    background:#000;filter:saturate(.85) contrast(1.05);}
+  #cam.mirror{transform:scaleX(-1);}
+
+  /* ---- ambient overlays ---- */
+  #scan{position:absolute;inset:0;pointer-events:none;mix-blend-mode:screen;
+    background:
+      linear-gradient(transparent 0 1px,transparent 2px),
+      repeating-linear-gradient(0deg,rgba(84,255,159,.045) 0 1px,transparent 1px 3px);
+    opacity:.6;}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(120% 90% at 50% 45%,transparent 55%,rgba(0,0,0,.78) 100%);}
+  canvas#game{position:absolute;inset:0;width:100%;height:100%;}
+
+  /* ---- HUD ---- */
+  #hud{position:absolute;inset:0;pointer-events:none;
+    padding:max(14px,env(safe-area-inset-top)) 16px 16px;
+    display:flex;flex-direction:column;justify-content:space-between;}
+  .hud-row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+  .tag{font-size:10px;letter-spacing:.32em;text-transform:uppercase;color:var(--toxic);
+    opacity:.85;}
+  .readout{font-size:11px;letter-spacing:.14em;color:var(--bone);opacity:.7;}
+  .pips{display:flex;gap:7px;margin-top:6px;}
+  .pip{width:30px;height:8px;border:1px solid var(--toxic-dim);border-radius:1px;
+    background:transparent;transition:background .15s,box-shadow .15s,border-color .15s;}
+  .pip.lit{background:var(--infect);border-color:var(--infect);
+    box-shadow:0 0 10px var(--infect);}
+  .right{text-align:right;}
+  .score{font-size:26px;font-weight:800;letter-spacing:.02em;color:var(--toxic);
+    text-shadow:0 0 14px rgba(84,255,159,.45);line-height:1;}
+  .score-lbl{font-size:9px;letter-spacing:.3em;opacity:.6;text-transform:uppercase;}
+  #threat-wrap{align-self:center;width:min(420px,70%);}
+  #threat-lbl{display:flex;justify-content:space-between;font-size:9px;letter-spacing:.28em;
+    text-transform:uppercase;opacity:.65;margin-bottom:4px;}
+  #threat-bar{height:4px;background:rgba(255,255,255,.08);border-radius:2px;overflow:hidden;}
+  #threat-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--toxic),var(--amber),var(--infect));
+    transition:width .4s linear;}
+
+  /* corner brackets */
+  .corner{position:absolute;width:26px;height:26px;border:2px solid var(--toxic);opacity:.5;}
+  .c-tl{top:10px;left:10px;border-right:0;border-bottom:0;}
+  .c-tr{top:10px;right:10px;border-left:0;border-bottom:0;}
+  .c-bl{bottom:10px;left:10px;border-right:0;border-top:0;}
+  .c-br{bottom:10px;right:10px;border-left:0;border-top:0;}
+
+  /* ---- flash on hit ---- */
+  #flash{position:absolute;inset:0;pointer-events:none;opacity:0;
+    display:flex;align-items:center;justify-content:center;flex-direction:column;}
+  #flash.go{animation:hitflash .9s ease-out forwards;}
+  #flash .word{font-size:clamp(34px,12vw,84px);font-weight:900;letter-spacing:.04em;
+    text-transform:uppercase;color:#fff;text-shadow:0 0 24px #fff;}
+  #flash .sub{font-size:11px;letter-spacing:.3em;margin-top:8px;text-transform:uppercase;opacity:.85;}
+  @keyframes hitflash{
+    0%{opacity:0;}
+    8%{opacity:1;background:var(--infect);}
+    100%{opacity:0;background:var(--infect);}
+  }
+  #stage.shake{animation:shake .45s cubic-bezier(.36,.07,.19,.97);}
+  @keyframes shake{
+    10%,90%{transform:translate(-2px,1px);}
+    30%,70%{transform:translate(4px,-2px);}
+    50%{transform:translate(-5px,2px);}
+  }
+
+  /* ---- panels (start / end) ---- */
+  .panel{position:absolute;inset:0;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;text-align:center;padding:32px;
+    background:radial-gradient(140% 100% at 50% 40%,rgba(7,11,9,.78),rgba(7,11,9,.97));
+    backdrop-filter:blur(2px);z-index:20;}
+  .panel.hidden{display:none;}
+  .eyebrow{font-size:11px;letter-spacing:.45em;text-transform:uppercase;color:var(--toxic);
+    margin-bottom:18px;opacity:.9;}
+  .title{font-size:clamp(48px,17vw,120px);font-weight:900;line-height:.86;letter-spacing:-.01em;
+    text-transform:uppercase;color:var(--bone);}
+  .title .l2{display:block;color:var(--infect);text-shadow:0 0 30px rgba(255,46,77,.5);}
+  .brief{max-width:340px;font-size:12.5px;line-height:1.7;letter-spacing:.04em;
+    color:var(--bone);opacity:.72;margin:22px 0 30px;}
+  .brief b{color:var(--toxic);font-weight:700;}
+  .btn{pointer-events:auto;font-family:var(--mono);cursor:pointer;
+    font-size:14px;font-weight:800;letter-spacing:.22em;text-transform:uppercase;
+    color:var(--void);background:var(--toxic);border:0;border-radius:2px;
+    padding:18px 42px;box-shadow:0 0 30px rgba(84,255,159,.4);
+    transition:transform .12s,box-shadow .12s;}
+  .btn:active{transform:scale(.96);}
+  .btn:focus-visible{outline:3px solid var(--amber);outline-offset:3px;}
+  .ghost{margin-top:18px;font-size:10px;letter-spacing:.2em;opacity:.45;text-transform:uppercase;}
+
+  /* end-screen specific */
+  #end .title{color:var(--infect);text-shadow:0 0 40px rgba(255,46,77,.6);}
+  #end .escalated{font-size:12px;letter-spacing:.3em;text-transform:uppercase;
+    color:var(--amber);margin-top:14px;}
+  .stat-row{display:flex;gap:34px;margin:26px 0 4px;}
+  .stat{display:flex;flex-direction:column;}
+  .stat .n{font-size:30px;font-weight:900;color:var(--toxic);}
+  .stat .k{font-size:9px;letter-spacing:.28em;text-transform:uppercase;opacity:.6;margin-top:4px;}
+
+  #err{position:absolute;left:0;right:0;bottom:0;padding:14px 18px;font-size:11px;
+    letter-spacing:.06em;color:var(--amber);background:rgba(0,0,0,.7);display:none;z-index:30;
+    text-align:center;}
+  @media(prefers-reduced-motion:reduce){
+    #flash.go{animation-duration:.4s;}#stage.shake{animation:none;}
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="game"></canvas>
+  <div id="scan"></div>
+  <div id="vignette"></div>
+
+  <!-- HUD -->
+  <div id="hud">
+    <div class="hud-row">
+      <div>
+        <div class="tag">RSV Field Scanner</div>
+        <div class="pips" id="pips">
+          <div class="pip"></div><div class="pip"></div><div class="pip"></div>
+        </div>
+      </div>
+      <div class="right">
+        <div class="score" id="score">0</div>
+        <div class="score-lbl">dodged</div>
+      </div>
+    </div>
+    <div id="threat-wrap">
+      <div id="threat-lbl"><span>Threat level</span><span id="threat-pct">0%</span></div>
+      <div id="threat-bar"><div id="threat-fill"></div></div>
+    </div>
+    <div class="hud-row"><span class="readout" id="hint">&nbsp;</span><span class="readout">EXPOSURE: LIVE</span></div>
+    <div class="corner c-tl"></div><div class="corner c-tr"></div>
+    <div class="corner c-bl"></div><div class="corner c-br"></div>
+  </div>
+
+  <!-- hit flash -->
+  <div id="flash"><div class="word" id="flashWord"></div><div class="sub" id="flashSub"></div></div>
+
+  <!-- START -->
+  <div class="panel" id="start">
+    <div class="eyebrow">Containment Protocol</div>
+    <h1 class="title">Viral<span class="l2">Load</span></h1>
+    <p class="brief">Airborne <b>RSV</b> particles are closing on your position.
+      <b>Jerk the phone away</b> the instant one locks on — or <b>tap it</b> to swat it down.
+      Three contacts and it’s out of your hands.</p>
+    <button class="btn" id="startBtn">Begin Scan</button>
+    <div class="ghost">grants camera + motion access</div>
+  </div>
+
+  <!-- END -->
+  <div class="panel hidden" id="end">
+    <div class="eyebrow">Case Outcome</div>
+    <h1 class="title">Exacerbated</h1>
+    <div class="escalated">⚠ It escalated.</div>
+    <div class="stat-row">
+      <div class="stat"><span class="n" id="endScore">0</span><span class="k">dodged</span></div>
+      <div class="stat"><span class="n" id="endTime">0s</span><span class="k">survived</span></div>
+    </div>
+    <button class="btn" id="retryBtn">Try Again</button>
+    <div class="ghost">stay home · wash hands · get vaccinated</div>
+  </div>
+
+  <div id="err"></div>
+</div>
+
+<script>
+(()=>{
+  "use strict";
+  const $=id=>document.getElementById(id);
+  const stage=$("stage"), cam=$("cam"), canvas=$("game"), ctx=canvas.getContext("2d");
+  const startPanel=$("start"), endPanel=$("end");
+  const flash=$("flash"), flashWord=$("flashWord"), flashSub=$("flashSub");
+  const scoreEl=$("score"), pips=[...document.querySelectorAll("#pips .pip")];
+  const threatFill=$("threat-fill"), threatPct=$("threat-pct"), hintEl=$("hint"), errEl=$("err");
+
+  // ---------- tunables ----------
+  const CFG={
+    maxInfections:3,
+    spawnStart:1500,   // ms between spawns at t=0
+    spawnMin:520,      // ms between spawns at full difficulty
+    lifeStart:2900,    // ms a virus takes to reach you at t=0  (slower = easier)
+    lifeMin:1050,      // ms at full difficulty (faster = harder)
+    rampTime:85000,    // ms to reach full difficulty
+    dangerFrom:0.66,   // progress at which a virus is "armed" and dodgeable/lethal
+    jerkThreshold:7.5, // device-motion delta (m/s^2) that counts as "move away"
+    dodgeCooldown:260, // ms between accepted jerks (kills jitter)
+    maxAlive:7
+  };
+  const HITWORDS=["Infected","Reinfected","Exacerbated"];
+  const HITSUBS =["RSV — contact 1","RSV — contact 2","Lower respiratory involvement"];
+
+  // ---------- state ----------
+  let state="start", viruses=[], infections=0, score=0;
+  let runStart=0, lastSpawn=0, lastFrame=0, lastJerk=0;
+  let prevAccel=null, motionOK=false, frontCam=false;
+  let W=0,H=0,DPR=1,stream=null,rafId=0;
+
+  function resize(){
+    DPR=Math.min(window.devicePixelRatio||1,2);
+    W=window.innerWidth; H=window.innerHeight;
+    canvas.width=W*DPR; canvas.height=H*DPR;
+    ctx.setTransform(DPR,0,0,DPR,0,0);
+  }
+  window.addEventListener("resize",resize); resize();
+
+  // difficulty 0..1
+  const diff=t=>Math.min((t-runStart)/CFG.rampTime,1);
+  const lerp=(a,b,x)=>a+(b-a)*x;
+
+  // ---------- camera ----------
+  async function startCamera(){
+    const tryGet=c=>navigator.mediaDevices.getUserMedia(c);
+    try{
+      stream=await tryGet({video:{facingMode:{ideal:"environment"}},audio:false});
+    }catch(e){
+      try{ stream=await tryGet({video:true,audio:false}); frontCam=true; }
+      catch(e2){ throw e2; }
+    }
+    const track=stream.getVideoTracks()[0];
+    const fm=track.getSettings&&track.getSettings().facingMode;
+    if(fm==="user") frontCam=true;
+    cam.classList.toggle("mirror",frontCam);
+    cam.srcObject=stream;
+    await cam.play().catch(()=>{});
+  }
+
+  // ---------- device motion ----------
+  async function enableMotion(){
+    if(typeof DeviceMotionEvent==="undefined") return false;
+    try{
+      if(typeof DeviceMotionEvent.requestPermission==="function"){
+        const res=await DeviceMotionEvent.requestPermission();
+        if(res!=="granted") return false;
+      }
+    }catch(_){ /* non-iOS: no permission API */ }
+    window.addEventListener("devicemotion",onMotion,{passive:true});
+    return true;
+  }
+  function onMotion(e){
+    const a=e.acceleration && e.acceleration.x!=null ? e.acceleration : e.accelerationIncludingGravity;
+    if(!a) return;
+    if(prevAccel){
+      const dx=a.x-prevAccel.x, dy=a.y-prevAccel.y, dz=(a.z||0)-(prevAccel.z||0);
+      const jerk=Math.hypot(dx,dy,dz);
+      if(jerk>CFG.jerkThreshold) registerDodge();
+    }
+    prevAccel={x:a.x||0,y:a.y||0,z:a.z||0};
+  }
+
+  // a "move away" dodge clears every armed virus on screen
+  function registerDodge(){
+    if(state!=="playing") return;
+    const now=performance.now();
+    if(now-lastJerk<CFG.dodgeCooldown) return;
+    lastJerk=now;
+    let cleared=0;
+    for(const v of viruses){
+      if(!v.dead && v.progress>=CFG.dangerFrom){ v.dead=true; v.popped=now; cleared++; }
+    }
+    if(cleared){ bumpScore(cleared); navigator.vibrate&&navigator.vibrate(15); }
+  }
+
+  function bumpScore(n){ score+=n; scoreEl.textContent=score; }
+
+  // ---------- viruses ----------
+  function spawnVirus(t){
+    const d=diff(t);
+    const life=lerp(CFG.lifeStart,CFG.lifeMin,d);
+    // spawn near an edge, aim toward a point near the viewer (screen centre-ish)
+    const edge=Math.random();
+    let sx,sy;
+    if(edge<.25){sx=Math.random()*W;sy=-40;}
+    else if(edge<.5){sx=Math.random()*W;sy=H+40;}
+    else if(edge<.75){sx=-40;sy=Math.random()*H;}
+    else {sx=W+40;sy=Math.random()*H;}
+    const tx=W*(.3+Math.random()*.4), ty=H*(.3+Math.random()*.4);
+    viruses.push({sx,sy,tx,ty,born:t,life,progress:0,dead:false,popped:0,
+      spin:Math.random()*Math.PI*2, hue:Math.random()*16-8});
+  }
+
+  function updateViruses(t){
+    for(const v of viruses){
+      if(v.dead) continue;
+      v.progress=(t-v.born)/v.life;
+      if(v.progress>=1){            // reached you
+        v.dead=true; v.hit=true;
+      }
+    }
+    // resolve hits
+    for(const v of viruses){ if(v.hit){ v.hit=false; takeHit(t); } }
+    // cull
+    viruses=viruses.filter(v=>!v.dead || (t-(v.popped||v.born))<260);
+  }
+
+  function drawVirus(v,t){
+    const e=Math.min(v.progress,1);
+    const x=lerp(v.sx,v.tx,easeIn(e)), y=lerp(v.sy,v.ty,easeIn(e));
+    const r=lerp(10,Math.max(W,H)*0.34,easeIn(e));
+    const armed=v.progress>=CFG.dangerFrom;
+    let alpha=1, scale=1;
+    if(v.dead && v.popped){                   // pop animation
+      const k=(t-v.popped)/260; alpha=1-k; scale=1+k*0.6;
+    }
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(v.spin + t*0.0009);
+    ctx.scale(scale,scale);
+    ctx.globalAlpha=Math.max(alpha,0);
+
+    const base=armed?"#ff2e4d":"#54ff9f";
+    ctx.shadowColor=base; ctx.shadowBlur=armed?34:16;
+    // spikes (RSV glycoprotein look)
+    const spikes=12;
+    ctx.strokeStyle=base; ctx.lineWidth=Math.max(2,r*0.05);
+    for(let i=0;i<spikes;i++){
+      const a=(i/spikes)*Math.PI*2;
+      const ix=Math.cos(a)*r*0.78, iy=Math.sin(a)*r*0.78;
+      const ox=Math.cos(a)*r*1.12, oy=Math.sin(a)*r*1.12;
+      ctx.beginPath();ctx.moveTo(ix,iy);ctx.lineTo(ox,oy);ctx.stroke();
+      ctx.beginPath();ctx.arc(ox,oy,r*0.10,0,7);ctx.fillStyle=base;ctx.fill();
+    }
+    // body
+    const g=ctx.createRadialGradient(-r*.3,-r*.3,r*.1,0,0,r*.8);
+    g.addColorStop(0,armed?"rgba(255,120,140,.95)":"rgba(150,255,200,.95)");
+    g.addColorStop(1,armed?"rgba(150,10,30,.9)":"rgba(20,110,70,.9)");
+    ctx.fillStyle=g; ctx.beginPath();ctx.arc(0,0,r*0.78,0,7);ctx.fill();
+    // inner spots
+    ctx.shadowBlur=0; ctx.globalAlpha*=0.5; ctx.fillStyle="rgba(0,0,0,.4)";
+    for(let i=0;i<5;i++){const a=v.spin+i*1.3;ctx.beginPath();
+      ctx.arc(Math.cos(a)*r*.35,Math.sin(a)*r*.35,r*0.1,0,7);ctx.fill();}
+    ctx.restore();
+
+    // targeting reticle when armed
+    if(armed && !v.dead){
+      ctx.save();ctx.translate(x,y);
+      const br=r*1.35, pulse=0.5+0.5*Math.sin(t*0.02);
+      ctx.strokeStyle=`rgba(255,46,77,${0.5+0.5*pulse})`;ctx.lineWidth=2;
+      const seg=br*0.4;
+      for(const [sxg,syg] of [[-1,-1],[1,-1],[-1,1],[1,1]]){
+        ctx.beginPath();
+        ctx.moveTo(sxg*br, syg*br - syg*seg);ctx.lineTo(sxg*br,syg*br);
+        ctx.lineTo(sxg*br - sxg*seg, syg*br);ctx.stroke();
+      }
+      ctx.restore();
+    }
+  }
+  const easeIn=x=>x*x;
+
+  // ---------- hit handling ----------
+  function takeHit(t){
+    infections++;
+    if(navigator.vibrate) navigator.vibrate([60,40,60]);
+    pips.forEach((p,i)=>p.classList.toggle("lit",i<infections));
+    const idx=Math.min(infections-1,HITWORDS.length-1);
+    flashWord.textContent=HITWORDS[idx];
+    flashSub.textContent=HITSUBS[idx];
+    flash.classList.remove("go"); void flash.offsetWidth; flash.classList.add("go");
+    stage.classList.remove("shake"); void stage.offsetWidth; stage.classList.add("shake");
+    if(infections>=CFG.maxInfections) setTimeout(endGame,650);
+  }
+
+  // ---------- loop ----------
+  function loop(t){
+    if(state!=="playing") return;
+    const d=diff(t);
+    // spawn
+    const interval=lerp(CFG.spawnStart,CFG.spawnMin,d);
+    if(t-lastSpawn>interval && viruses.filter(v=>!v.dead).length<CFG.maxAlive){
+      spawnVirus(t); lastSpawn=t;
+    }
+    updateViruses(t);
+    ctx.clearRect(0,0,W,H);
+    for(const v of viruses) drawVirus(v,t);
+    // threat meter
+    const pct=Math.round(d*100);
+    threatFill.style.width=pct+"%"; threatPct.textContent=pct+"%";
+    lastFrame=t;
+    rafId=requestAnimationFrame(loop);
+  }
+
+  // ---------- flow ----------
+  async function begin(){
+    errEl.style.display="none";
+    try{ await startCamera(); }
+    catch(e){
+      errEl.textContent="Camera blocked. Open this page over HTTPS on your phone and allow camera access. ("+e.name+")";
+      errEl.style.display="block"; return;
+    }
+    motionOK=await enableMotion();
+    hintEl.innerHTML = motionOK ? "JERK PHONE TO DODGE" : "MOTION OFF — TAP VIRUSES";
+    // reset
+    viruses=[]; infections=0; score=0; scoreEl.textContent="0";
+    pips.forEach(p=>p.classList.remove("lit"));
+    runStart=performance.now(); lastSpawn=runStart; lastJerk=0; prevAccel=null;
+    startPanel.classList.add("hidden"); endPanel.classList.add("hidden");
+    state="playing";
+    cancelAnimationFrame(rafId); rafId=requestAnimationFrame(loop);
+  }
+
+  function endGame(){
+    state="end";
+    cancelAnimationFrame(rafId);
+    $("endScore").textContent=score;
+    $("endTime").textContent=Math.round((performance.now()-runStart)/1000)+"s";
+    endPanel.classList.remove("hidden");
+  }
+
+  // tap-to-swat (works always; sole method if motion denied)
+  canvas.addEventListener("pointerdown",ev=>{
+    if(state!=="playing") return;
+    const px=ev.clientX, py=ev.clientY, t=performance.now();
+    let best=null,bd=1e9;
+    for(const v of viruses){
+      if(v.dead) continue;
+      const e=easeIn(Math.min(v.progress,1));
+      const x=lerp(v.sx,v.tx,e), y=lerp(v.sy,v.ty,e);
+      const r=lerp(10,Math.max(W,H)*0.34,e)*1.2;
+      const dist=Math.hypot(px-x,py-y);
+      if(dist<r && dist<bd){bd=dist;best=v;}
+    }
+    if(best){best.dead=true;best.popped=t;bumpScore(1);navigator.vibrate&&navigator.vibrate(12);}
+  });
+
+  $("startBtn").addEventListener("click",begin);
+  $("retryBtn").addEventListener("click",begin);
+  document.addEventListener("visibilitychange",()=>{
+    if(document.hidden && state==="playing"){ /* pause */ cancelAnimationFrame(rafId); }
+    else if(!document.hidden && state==="playing"){ lastSpawn=performance.now(); rafId=requestAnimationFrame(loop);}
+  });
+})();
+</script>
+</body>
+</html>
